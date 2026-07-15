@@ -1,44 +1,47 @@
-import copy
-import os
-import logging
-import sys
-import json
 import importlib
 import importlib.util
 import inspect
+import json
+import logging
+import os
+import sys
 
 try:
     import torch.multiprocessing as mp
+
     try:
         # avoid "cannot reinit CUDA in forked process" error in loading cuda?
-        mp.set_start_method('spawn')
+        mp.set_start_method("spawn")
     except RuntimeError:
         pass
 except ImportError:
     import multiprocessing as mp
 
-from semver import Version
-
-from typing import Tuple, Callable, Union, List, Dict, Optional
 from abc import ABC
+from typing import Callable, Dict, List, Optional, Tuple, Union
+
 from colorama import Fore
+from semver import Version
 
 try:
     from label_studio_sdk import LabelStudio
 except Exception:  # pragma: no cover - fallback for older SDKs
     LabelStudio = None
-from label_studio_sdk.label_interface import LabelInterface
-from label_studio_sdk._extensions.label_studio_tools.core.label_config import parse_config
+from label_studio_sdk._extensions.label_studio_tools.core.label_config import (
+    parse_config,
+)
 from label_studio_sdk._extensions.label_studio_tools.core.utils.io import get_local_path
+from label_studio_sdk.label_interface import LabelInterface
+
+from .cache import create_cache
 from .response import ModelResponse
 from .utils import is_preload_needed
-from .cache import create_cache
 
 logger = logging.getLogger(__name__)
 
 CACHE = create_cache(
-    os.getenv('CACHE_TYPE', 'sqlite'),
-    path=os.getenv('MODEL_DIR', '.'))
+    os.getenv("CACHE_TYPE", "sqlite"), path=os.getenv("MODEL_DIR", ".")
+)
 
 
 # Decorator to register predict function
@@ -49,14 +52,18 @@ _update_fn: Callable = None
 def predict_fn(f):
     global _predict_fn
     _predict_fn = f
-    logger.info(f'{Fore.GREEN}Predict function "{_predict_fn.__name__}" registered{Fore.RESET}')
+    logger.info(
+        f'{Fore.GREEN}Predict function "{_predict_fn.__name__}" registered{Fore.RESET}'
+    )
     return f
 
 
 def update_fn(f):
     global _update_fn
     _update_fn = f
-    logger.info(f'{Fore.GREEN}Update function "{_update_fn.__name__}" registered{Fore.RESET}')
+    logger.info(
+        f'{Fore.GREEN}Update function "{_update_fn.__name__}" registered{Fore.RESET}'
+    )
     return f
 
 
@@ -65,13 +72,14 @@ class LabelStudioMLBase(ABC):
     This is the base class for all LabelStudio Machine Learning models.
     It provides the structure and functions necessary for the machine learning models.
     """
+
     INITIAL_MODEL_VERSION = "0.0.1"
-    
+
     TRAIN_EVENTS = (
-        'ANNOTATION_CREATED',
-        'ANNOTATION_UPDATED',
-        'ANNOTATION_DELETED',
-        'START_TRAINING'
+        "ANNOTATION_CREATED",
+        "ANNOTATION_UPDATED",
+        "ANNOTATION_DELETED",
+        "START_TRAINING",
     )
 
     def __init__(self, project_id: Optional[str] = None, label_config=None):
@@ -81,29 +89,28 @@ class LabelStudioMLBase(ABC):
         Args:
             project_id (str, optional): The project ID. Defaults to None.
         """
-        self.project_id = project_id or ''
+        self.project_id = project_id or ""
         self._label_studio_client = None
         if label_config is not None:
             self.use_label_config(label_config)
         else:
-            logger.warning('Label config is not provided')
+            logger.warning("Label config is not provided")
 
         # set initial model version
         if not self.model_version:
             self.set("model_version", self.INITIAL_MODEL_VERSION)
-        
+
         self.setup()
-        
+
     def setup(self):
         """Abstract method for setting up the machine learning model.
         This method should be overridden by subclasses of
         LabelStudioMLBase to conduct any necessary setup steps, for
         example to set model_version
         """
-        
+
         # self.set("model_version", "0.0.2")
-        
-        
+
     def use_label_config(self, label_config: str):
         """
         Apply label configuration and set the model version and parsed label config.
@@ -112,28 +119,27 @@ class LabelStudioMLBase(ABC):
             label_config (str): The label configuration.
         """
         self.label_interface = LabelInterface(config=label_config)
-        
-        # if not current_label_config:
-            # first time model is initialized
-            # self.set('model_version', 'INITIAL')                            
 
-        current_label_config = self.get('label_config')    
+        # if not current_label_config:
+        # first time model is initialized
+        # self.set('model_version', 'INITIAL')
+
+        current_label_config = self.get("label_config")
         # label config has been changed, need to save
         if current_label_config != label_config:
-            self.set('label_config', label_config)
-            self.set('parsed_label_config', json.dumps(parse_config(label_config)))        
-            
+            self.set("label_config", label_config)
+            self.set("parsed_label_config", json.dumps(parse_config(label_config)))
 
     def set_extra_params(self, extra_params):
         """Set extra parameters. Extra params could be used to pass
         any additional static metadata from Label Studio side to ML
         Backend.
-        
+
         Args:
             extra_params: Extra parameters to set.
 
         """
-        self.set('extra_params', extra_params)
+        self.set("extra_params", extra_params)
 
     @property
     def extra_params(self):
@@ -144,12 +150,12 @@ class LabelStudioMLBase(ABC):
             json: If parameters exist, returns parameters in JSON format. Else, returns None.
         """
         # TODO this needs to have exception
-        params = self.get('extra_params')
+        params = self.get("extra_params")
         if params:
             return json.loads(params)
         else:
             return {}
-            
+
     def get(self, key: str):
         return CACHE[self.project_id, key]
 
@@ -161,15 +167,15 @@ class LabelStudioMLBase(ABC):
 
     @property
     def label_config(self):
-        return self.get('label_config')
+        return self.get("label_config")
 
     @property
-    def parsed_label_config(self):        
-        return json.loads(self.get('parsed_label_config'))
+    def parsed_label_config(self):
+        return json.loads(self.get("parsed_label_config"))
 
     @property
     def model_version(self):
-        mv = self.get('model_version')
+        mv = self.get("model_version")
         if mv:
             try:
                 sv = Version.parse(mv)
@@ -180,19 +186,20 @@ class LabelStudioMLBase(ABC):
             return None
 
     def bump_model_version(self):
-        """
-        """
+        """ """
         mv = self.model_version
 
         # TODO: check if this is correct - seems like it doesn't work, check RND-7 and make sure it's test covered
         mv.bump_minor()
-        logger.debug(f'Bumping model version from {self.model_version} to {mv}')
-        self.set('model_version', str(mv))
-        
+        logger.debug(f"Bumping model version from {self.model_version} to {mv}")
+        self.set("model_version", str(mv))
+
         return mv
-        
+
     # @abstractmethod
-    def predict(self, tasks: List[Dict], context: Optional[Dict] = None, **kwargs) -> Union[List[Dict], ModelResponse]:
+    def predict(
+        self, tasks: List[Dict], context: Optional[Dict] = None, **kwargs
+    ) -> Union[List[Dict], ModelResponse]:
         """
         Predict and return a list of dicts with predictions for each task.
 
@@ -202,7 +209,7 @@ class LabelStudioMLBase(ABC):
             kwargs: Additional parameters passed on to the predict function.
 
         Returns:
-            list[dict]: A list of dictionaries containing predictions.                
+            list[dict]: A list of dictionaries containing predictions.
         """
 
         # if there is a registered predict function, use it
@@ -220,9 +227,13 @@ class LabelStudioMLBase(ABC):
           additional_params: Additional parameters to be processed.
         """
         if event in self.TRAIN_EVENTS:
-            logger.debug(f'Job {job_id}: Received event={event}: calling {self.__class__.__name__}.fit()')
-            train_output = self.fit(event=event, data=data, job_id=job_id, **additional_params)
-            logger.debug(f'Job {job_id}: Train finished.')
+            logger.debug(
+                f"Job {job_id}: Received event={event}: calling {self.__class__.__name__}.fit()"
+            )
+            train_output = self.fit(
+                event=event, data=data, job_id=job_id, **additional_params
+            )
+            logger.debug(f"Job {job_id}: Train finished.")
             return train_output
 
     def fit(self, event, data, **additional_params):
@@ -244,16 +255,16 @@ class LabelStudioMLBase(ABC):
             try:
                 # Keep a single SDK client per backend instance.
                 label_studio_base_url = (
-                    os.getenv('LABEL_STUDIO_URL')
-                    or os.getenv('LABEL_STUDIO_HOST')
-                    or os.getenv('HOSTNAME')
+                    os.getenv("LABEL_STUDIO_URL")
+                    or os.getenv("LABEL_STUDIO_HOST")
+                    or os.getenv("HOSTNAME")
                 )
                 self._label_studio_client = LabelStudio(base_url=label_studio_base_url)
             except Exception as exc:
                 logger.warning(
                     "Unable to initialize Label Studio SDK client with base URL '%s': %s",
                     label_studio_base_url,
-                    exc
+                    exc,
                 )
                 self._label_studio_client = False
         return self._label_studio_client
@@ -264,12 +275,20 @@ class LabelStudioMLBase(ABC):
         if client:
             return client._client_wrapper._tokens_client.api_key
 
-        return (
-            os.getenv('LABEL_STUDIO_API_KEY')
-            or os.getenv('LABEL_STUDIO_ACCESS_TOKEN')
+        return os.getenv("LABEL_STUDIO_API_KEY") or os.getenv(
+            "LABEL_STUDIO_ACCESS_TOKEN"
         )
 
-    def get_local_path(self, url, project_dir=None, ls_host=None, ls_access_token=None, task_id=None, *args, **kwargs):
+    def get_local_path(
+        self,
+        url,
+        project_dir=None,
+        ls_host=None,
+        ls_access_token=None,
+        task_id=None,
+        *args,
+        **kwargs,
+    ):
         """
         Return the local path for a given URL.
 
@@ -294,15 +313,26 @@ class LabelStudioMLBase(ABC):
             or os.getenv('LABEL_STUDIO_HOST')
             or os.getenv('HOSTNAME')
         )
-        
-        if url.startswith(('http://', 'https://')) and ls_host_configured:
+
+        if url.startswith(("http://", "https://")):
             from urllib.parse import urlparse, urlunparse
+
             parsed_url = urlparse(url)
-            parsed_ls = urlparse(ls_host_configured)
-            
-            if parsed_url.netloc != parsed_ls.netloc:
-                logger.info(f"Target URL netloc '{parsed_url.netloc}' mismatch with configured netloc '{parsed_ls.netloc}'. Rewriting URL to use configured host to enable Authorization header.")
-                url = urlunparse(parsed_url._replace(netloc=parsed_ls.netloc, scheme=parsed_ls.scheme))
+
+            # 1. 对于本地存储和上传文件路径，转为相对路径，以便 SDK 保留文件名后缀并自动用 LABEL_STUDIO_URL 拼接
+            if parsed_url.path.startswith(("/data/", "/storage-data/")):
+                url = parsed_url.path
+                if parsed_url.query:
+                    url += "?" + parsed_url.query
+            # 2. 对于其他绝对路径，直接替换主机名 netloc 为配置好的 LABEL_STUDIO_URL
+            elif ls_host_configured:
+                parsed_ls = urlparse(ls_host_configured)
+                if parsed_url.netloc != parsed_ls.netloc:
+                    url = urlunparse(
+                        parsed_url._replace(
+                            netloc=parsed_ls.netloc, scheme=parsed_ls.scheme
+                        )
+                    )
 
         return get_local_path(
             url,
@@ -311,11 +341,11 @@ class LabelStudioMLBase(ABC):
             access_token=ls_access_token,
             task_id=task_id,
             *args,
-            **kwargs
+            **kwargs,
         )
 
     def preload_task_data(self, task: Dict, value=None, read_file=True):
-        """ Preload task_data values using get_local_path() if values are URI/URL/local path.
+        """Preload task_data values using get_local_path() if values are URI/URL/local path.
 
         Args:
             task: Task root.
@@ -328,7 +358,9 @@ class LabelStudioMLBase(ABC):
         # recursively preload dict
         if isinstance(value, dict):
             for key, item in value.items():
-                value[key] = self.preload_task_data(task=task, value=item, read_file=read_file)
+                value[key] = self.preload_task_data(
+                    task=task, value=item, read_file=read_file
+                )
             return value
 
         # recursively preload list
@@ -340,10 +372,10 @@ class LabelStudioMLBase(ABC):
 
         # preload task data if value is URI/URL/local path
         elif isinstance(value, str) and is_preload_needed(value):
-            filepath = self.get_local_path(url=value, task_id=task.get('id'))
+            filepath = self.get_local_path(url=value, task_id=task.get("id"))
             if not read_file:
                 return filepath
-            with open(filepath, 'r') as f:
+            with open(filepath, "r") as f:
                 return f.read()
 
         # keep value as is
@@ -355,9 +387,8 @@ class LabelStudioMLBase(ABC):
         control_type: Union[str, Tuple],
         object_type: Union[str, Tuple],
         name_filter: Optional[Callable] = None,
-        to_name_filter: Optional[Callable] = None
+        to_name_filter: Optional[Callable] = None,
     ) -> Tuple[str, str, str]:
-        
         """
         Reads config and fetches the first control tag along with first object tag that matches the type.
 
@@ -370,13 +401,13 @@ class LabelStudioMLBase(ABC):
                                               Default is None.
 
         Returns:
-          tuple: (from_name, to_name, value), representing control tag, object tag and input value.        
+          tuple: (from_name, to_name, value), representing control tag, object tag and input value.
         """
         return self.label_interface.get_first_tag_occurence(
             control_type=control_type,
             object_type=object_type,
             name_filter=name_filter,
-            to_name_filter=to_name_filter
+            to_name_filter=to_name_filter,
         )
 
     def build_label_map(self, tag_name: str, names: List[str]) -> Dict[str, str]:
@@ -440,10 +471,14 @@ class LabelStudioMLBase(ABC):
                 predicted_values = label_tag.attr.get("predicted_values", "").split(",")
                 matched = False
                 for value in predicted_values:
-                    value = value.strip()  # remove spaces at the beginning and at the end
+                    value = (
+                        value.strip()
+                    )  # remove spaces at the beginning and at the end
                     if value and value in names:  # check if value is in model labels
                         if value not in model_labels:
-                            logger.warning(f'Predicted value "{value}" is not in model labels')
+                            logger.warning(
+                                f'Predicted value "{value}" is not in model labels'
+                            )
                         label_map[value] = ls_label
                         matched = True
 
@@ -477,9 +512,12 @@ def get_all_classes_inherited_LabelStudioMLBase(script_file):
     try:
         module = importlib.import_module(module_name)
     except ModuleNotFoundError as e:
-        print(Fore.RED + 'Can\'t import module "' + module_name + f'", reason: {e}.\n'
-              'If you are looking for examples, you can find a dummy model.py here:\n' +
-              Fore.LIGHTYELLOW_EX + 'https://labelstud.io/guide/ml_tutorials/dummy_model.html')
+        print(
+            Fore.RED + "Can't import module \"" + module_name + f'", reason: {e}.\n'
+            "If you are looking for examples, you can find a dummy model.py here:\n"
+            + Fore.LIGHTYELLOW_EX
+            + "https://labelstud.io/guide/ml_tutorials/dummy_model.html"
+        )
         module = None
         exit(-1)
 
