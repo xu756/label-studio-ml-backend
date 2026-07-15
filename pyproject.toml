@@ -1,0 +1,21 @@
+[project]
+name = "label-studio-ml-backend"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "colorama>=0.4.6",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "label-studio-sdk>=2.0.23",
+    "requests>=2.34.2",
+    "semver>=3.0.4",
+    "ultralytics>=8.4.95",
+    "python-dotenv>=1.0.0",
+    "sam2>=1.1.0",
+]
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
