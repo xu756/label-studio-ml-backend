@@ -1,7 +1,6 @@
 import logging
 import os
 import sys
-from typing import Dict, List, Optional
 from uuid import uuid4
 
 import numpy as np
@@ -147,7 +146,7 @@ class SAM2ImageModel(LabelStudioMLBase):
         return {"masks": [mask], "probs": [prob]}
 
     def predict(
-        self, tasks: List[Dict], context: Optional[Dict] = None, **kwargs
+        self, tasks: list[dict], context: dict | None = None, **kwargs
     ) -> ModelResponse:
         """
         根据用户在前台点击关键点 (Keypoints) 或画边界框 (Bounding Box) 交互信息计算抠图掩码。
