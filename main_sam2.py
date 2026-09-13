@@ -16,6 +16,7 @@ from label_studio_sdk.converter import brush
 from label_studio_ml.api import run_app
 from label_studio_ml.model import LabelStudioMLBase
 from label_studio_ml.response import ModelResponse
+from model_config import SAM2_CONFIG, SERVER_CONFIG
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -35,10 +36,10 @@ except ImportError:
     build_sam2 = None
     SAM2ImagePredictor = None
 
-DEVICE = os.getenv("DEVICE", "cuda")
+DEVICE = SAM2_CONFIG["device"]
 # 默认配置和权重文件
-MODEL_CONFIG = os.getenv("MODEL_CONFIG", "configs/sam2.1/sam2.1_hiera_l.yaml")
-MODEL_CHECKPOINT = os.getenv("MODEL_CHECKPOINT", "sam2.1_hiera_large.pt")
+MODEL_CONFIG = SAM2_CONFIG["model_config"]
+MODEL_CHECKPOINT = SAM2_CONFIG["checkpoint"]
 
 if DEVICE == "cuda" and torch.cuda.is_available():
     # 使用 bfloat16 优化精度和速度
@@ -214,7 +215,6 @@ class SAM2ImageModel(LabelStudioMLBase):
 
 
 if __name__ == "__main__":
-    # 从环境变量获取端口，默认 9090
-    port = int(os.getenv("PORT", 9090))
+    port = SERVER_CONFIG["port"]
     logger.info(f"正在启动 SAM2 抠图交互预标注服务，端口 {port}...")
-    run_app(SAM2ImageModel, host="0.0.0.0", port=port)
+    run_app(SAM2ImageModel, host=SERVER_CONFIG["host"], port=port)

@@ -11,11 +11,21 @@ dependencies = [
     "label-studio-sdk>=2.0.23",
     "requests>=2.34.2",
     "semver>=3.0.4",
+    "torch==2.13.0+cu126",
+    "torchvision==0.28.0+cu126",
     "ultralytics>=8.4.95",
     "python-dotenv>=1.0.0",
     "sam2>=1.1.0",
-    "label-studio-converter>=0.0.59",
 ]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://mirrors.nju.edu.cn/pytorch/whl/cu126"
+explicit = true
 
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"

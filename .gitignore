@@ -138,3 +138,7 @@ label_studio_ml/examples/segment_anything_video_interactive/segment-anything-2
 
 *.json
 *.xml
+
+*.ts
+*.ts.*
+*.npz

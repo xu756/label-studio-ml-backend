@@ -1,161 +1,207 @@
 import logging
-import os
+from pathlib import Path
+from threading import RLock
 
 from dotenv import load_dotenv
 from PIL import Image
 
-# 加载当前目录下的 .env 环境变量文件
 load_dotenv()
+
+from ultralytics import YOLO, YOLOE
 
 from label_studio_ml.api import run_app
 from label_studio_ml.model import LabelStudioMLBase
 from label_studio_ml.response import ModelResponse
+from model_config import SERVER_CONFIG, get_model_config
 
-# 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-try:
-    from ultralytics import YOLO
-except ImportError:
-    logger.error("未找到 ultralytics 包，请使用以下命令安装: pip install ultralytics")
-    YOLO = None
+# API 每次请求创建封装实例；权重在进程内缓存。锁保护提示更新及完整推理，避免项目串类。
+_MODEL_CACHE = {}
+_MODEL_LOCK = RLock()
 
 
 class YoloModel(LabelStudioMLBase):
-    """
-    用于 Label Studio 预标注的 YOLO 模型封装类。
-    加载本地的 YOLO 模型权重文件（例如 best.pt）并预测边界框（RectangleLabels）。
-    """
+    """YOLOE 文本提示 / 普通 YOLO 的矩形框与多边形预标注。"""
 
     def setup(self):
-        """配置模型版本并加载 YOLO 权重文件。"""
-        self.set("model_version", "yolo-best-1.0.0")
+        self.config = get_model_config(self.project_id)
+        self.set(
+            "model_version",
+            f"{self.config['model_type']}-{Path(self.config['model_path']).stem}-1.0",
+        )
 
-        # 从环境变量 MODEL_PATH 获取权重路径，默认为当前目录下的 best.pt
-        model_path = os.getenv("MODEL_PATH", "best.pt")
+    def _get_model(self):
+        key = (
+            self.config["model_type"],
+            self.config["model_path"],
+            self.config["device"],
+        )
+        if key not in _MODEL_CACHE:
+            factory = YOLOE if self.config["model_type"] == "yoloe" else YOLO
+            logger.info("加载 %s 权重: %s", key[0], key[1])
+            model = factory(key[1])
+            if self.config["device"] is not None:
+                model.to(self.config["device"])
+            _MODEL_CACHE[key] = (model, None)
+        return key, _MODEL_CACHE[key]
 
-        if YOLO is None:
-            raise ImportError("请先安装 ultralytics 依赖包: pip install ultralytics")
-
-        if not os.path.exists(model_path):
-            logger.warning(
-                f"模型文件 '{model_path}' 未找到！请将您训练好的 best.pt 放置在此目录下。"
+    def _get_control(self):
+        tag = (
+            "PolygonLabels"
+            if self.config["output_type"] == "polygon"
+            else "RectangleLabels"
+        )
+        candidates = [
+            (name, info)
+            for name, info in self.parsed_label_config.items()
+            if info["type"] == tag
+            and (not self.config["control_name"] or name == self.config["control_name"])
+        ]
+        if len(candidates) != 1:
+            raise ValueError(
+                f"请配置一个 {tag} 控件；有多个时在 model_config.py 指定 control_name"
             )
-            self.model = None
-        else:
-            logger.info(f"正在从本地加载 YOLO 模型权重: {model_path}...")
-            self.model = YOLO(model_path)
+        name, info = candidates[0]
+        if len(info["inputs"]) != 1 or info["inputs"][0]["type"] != "Image":
+            raise ValueError(f"{name} 必须关联一个 Image")
+        return name, info["to_name"][0], info["inputs"][0]["value"]
 
     def predict(
         self, tasks: list[dict], context: dict | None = None, **kwargs
     ) -> ModelResponse:
-        """
-        为输入的图像任务预测边界框。
-        """
-        if not self.model:
-            logger.error("YOLO 模型未加载，跳过预测。")
-            return ModelResponse(predictions=[])
-
-        # 获取 Label Studio 标注配置中的 RectangleLabels（控制标签）和 Image（数据标签）
-        try:
-            from_name, to_name, value = self.label_interface.get_first_tag_occurence(
-                "RectangleLabels", "Image"
+        from_name, to_name, image_key = self._get_control()
+        attrs = self.label_interface.get_control(from_name).labels_attrs
+        explicit_map = self.config.get("label_map")
+        if explicit_map is not None and (
+            not isinstance(explicit_map, dict)
+            or not explicit_map
+            or any(
+                not isinstance(k, str) or not k.strip() or v not in attrs
+                for k, v in explicit_map.items()
             )
-        except ValueError:
-            logger.error(
-                "Label Studio 项目的 Labeling Config 必须包含 <RectangleLabels> 和 <Image> 标签！"
+        ):
+            raise ValueError(
+                "label_map 必须是非空的 {YOLOE 类别: 当前控件的 Label value} 字典"
             )
-            return ModelResponse(predictions=[])
-
-        # 获取 Label Studio 配置中定义的所有类别标签
-        labels = self.label_interface.get_control(from_name).labels
-        label_map = {l.lower(): l for l in labels}  # 用于不区分大小写的标签匹配
+        # predicted_values 支持英文提示映射到中文标签；默认用标签自身作为提示。
+        prompts = []
+        for label, attr in attrs.items():
+            prompts.extend(
+                p.strip()
+                for p in (attr.attr.get("predicted_values") or label).split(",")
+                if p.strip()
+            )
+        prompts = (
+            list(explicit_map)
+            if explicit_map is not None
+            else list(dict.fromkeys(prompts))
+        )
+        if not prompts:
+            raise ValueError("标注控件必须至少包含一个非空 Label")
 
         predictions = []
-        for task in tasks:
-            image_url = task["data"].get(value)
-            if not image_url:
-                continue
-
-            # 获取图像在本地的真实存储路径（Label Studio 传过来的是 URL，此函数会自动处理缓存和下载）
-            local_image_path = self.get_local_path(image_url, task_id=task.get("id"))
-
-            # 读取图像获取原始分辨率的宽和高
-            try:
-                img = Image.open(local_image_path)
-                img_width, img_height = img.size
-            except Exception as e:
-                logger.error(f"无法打开图像文件 {local_image_path}: {e}")
-                continue
-
-            # 运行 YOLO 推理
-            results = self.model(local_image_path)
-            result_list = []
-
-            for result in results:
-                if result.boxes is not None:
-                    for box in result.boxes:
-                        # 获取绝对像素坐标 [xmin, ymin, xmax, ymax]
-                        xyxy = box.xyxy[0].tolist()
-                        xmin, ymin, xmax, ymax = xyxy
-
-                        # 转换成 Label Studio 要求的百分比坐标 (0-100)
-                        x = (xmin / img_width) * 100
-                        y = (ymin / img_height) * 100
-                        width = ((xmax - xmin) / img_width) * 100
-                        height = ((ymax - ymin) / img_height) * 100
-
-                        # 获取置信度分数
-                        score = float(box.conf[0])
-
-                        # 获取类别索引和类别名称
-                        class_id = int(box.cls[0])
-                        class_name = self.model.names[class_id]
-
-                        # 将 YOLO 类别名映射到 Label Studio 配置的标签（支持不区分大小写匹配）
-                        label = label_map.get(class_name.lower())
-                        if not label:
-                            logger.warning(
-                                f"YOLO 预测类别 '{class_name}' 不在 Label Studio 的标签配置中，跳过该框。"
-                            )
+        with _MODEL_LOCK:
+            key, (model, previous_prompts) = self._get_model()
+            use_prompts = (
+                self.config["model_type"] == "yoloe" and self.config["text_prompts"]
+            )
+            signature = tuple(prompts) if use_prompts else None
+            # 同一权重若切换到固定类别模式，重新加载以恢复原始类别。
+            if not use_prompts and previous_prompts is not None:
+                del _MODEL_CACHE[key]
+                key, (model, previous_prompts) = self._get_model()
+            if use_prompts and signature != previous_prompts:
+                model.set_classes(prompts, model.get_text_pe(prompts))
+                _MODEL_CACHE[key] = (model, signature)
+            names = (
+                list(model.names.values())
+                if isinstance(model.names, dict)
+                else model.names
+            )
+            label_map = (
+                explicit_map
+                if explicit_map is not None
+                else self.build_label_map(from_name, names)
+            )
+            label_map = {name.casefold(): label for name, label in label_map.items()}
+            options = {k: self.config[k] for k in ("conf", "iou", "imgsz")}
+            if self.config["device"] is not None:
+                options["device"] = self.config["device"]
+            for task in tasks:
+                regions = []
+                prediction = {
+                    "result": regions,
+                    "score": 0,
+                    "model_version": self.get("model_version"),
+                }
+                predictions.append(prediction)
+                image_url = task.get("data", {}).get(image_key)
+                if not image_url:
+                    logger.warning("任务 %s 缺少图像字段 %s", task.get("id"), image_key)
+                    continue
+                path = self.get_local_path(image_url, task_id=task.get("id"))
+                with Image.open(path) as img:
+                    width, height = img.size
+                for result in model.predict(path, **options):
+                    if result.boxes is None:
+                        continue
+                    if (
+                        self.config["output_type"] == "polygon"
+                        and len(result.boxes)
+                        and result.masks is None
+                    ):
+                        raise ValueError(
+                            "polygon 输出需要分割权重，当前模型未返回 masks"
+                        )
+                    for index, box in enumerate(result.boxes):
+                        label = label_map.get(result.names[int(box.cls[0])].casefold())
+                        if label is None:
                             continue
-
-                        # 构造 Label Studio 格式的标注框结果
-                        result_list.append(
+                        if self.config["output_type"] == "polygon":
+                            points = result.masks.xyn[index]
+                            if len(points) < 3:
+                                continue
+                            value = {
+                                "polygonlabels": [label],
+                                "points": (points.clip(0, 1) * 100).tolist(),
+                            }
+                            kind = "polygonlabels"
+                        else:
+                            x1, y1, x2, y2 = box.xyxy[0].tolist()
+                            x1, x2 = [max(0, min(width, x)) for x in (x1, x2)]
+                            y1, y2 = [max(0, min(height, y)) for y in (y1, y2)]
+                            value = {
+                                "rectanglelabels": [label],
+                                "x": x1 / width * 100,
+                                "y": y1 / height * 100,
+                                "width": (x2 - x1) / width * 100,
+                                "height": (y2 - y1) / height * 100,
+                                "rotation": 0,
+                            }
+                            kind = "rectanglelabels"
+                        regions.append(
                             {
                                 "from_name": from_name,
                                 "to_name": to_name,
-                                "type": "rectanglelabels",
-                                "value": {
-                                    "rectanglelabels": [label],
-                                    "x": x,
-                                    "y": y,
-                                    "width": width,
-                                    "height": height,
-                                },
-                                "score": score,
+                                "type": kind,
+                                "value": value,
+                                "score": float(box.conf[0]),
+                                "original_width": width,
+                                "original_height": height,
+                                "image_rotation": 0,
                             }
                         )
-
-            # 计算平均置信度分数
-            avg_score = sum(r["score"] for r in result_list) / max(len(result_list), 1)
-
-            predictions.append(
-                {
-                    "result": result_list,
-                    "score": avg_score,
-                    "model_version": self.get("model_version"),
-                }
-            )
-
+                prediction["score"] = sum(r["score"] for r in regions) / max(
+                    len(regions), 1
+                )
         return ModelResponse(
             predictions=predictions, model_version=self.get("model_version")
         )
 
 
 if __name__ == "__main__":
-    # 从环境变量获取端口，默认 9090
-    port = int(os.getenv("PORT", 9090))
-    logger.info(f"正在启动 YOLO 目标检测 (best.pt) ML 服务，端口 {port}...")
-    run_app(YoloModel, host="0.0.0.0", port=port)
+    port = SERVER_CONFIG["port"]
+    logger.info("启动预测服务，端口 %s；项目配置见 model_config.py", port)
+    run_app(YoloModel, host=SERVER_CONFIG["host"], port=port)
