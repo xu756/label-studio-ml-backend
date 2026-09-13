@@ -142,3 +142,4 @@ label_studio_ml/examples/segment_anything_video_interactive/segment-anything-2
 *.ts
 *.ts.*
 *.npz
+runs
